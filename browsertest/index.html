@@ -67,15 +67,44 @@
 			<input type="file" id="fileInput" accept="image/*" />
 			<div class="status" id="status">Pick an image of a document/page to test detection.</div>
 			<canvas id="canvas"></canvas>
+			<div style="display: flex; gap: 10px; margin-top: 20px; flex-wrap: wrap">
+				<div>
+					<h3 style="font-size: 12px; margin-bottom: 5px">Paper Mask</h3>
+					<canvas id="paperMaskCanvas" style="max-width: 280px"></canvas>
+				</div>
+				<div>
+					<h3 style="font-size: 12px; margin-bottom: 5px">Edges</h3>
+					<canvas id="edgesCanvas" style="max-width: 280px"></canvas>
+				</div>
+				<div>
+					<h3 style="font-size: 12px; margin-bottom: 5px">Combined</h3>
+					<canvas id="combinedCanvas" style="max-width: 280px"></canvas>
+				</div>
+			</div>
 		</div>
 
 		<script type="module">
-			import { detectPageCorners } from "./PageDetection.js";
+			import { detectPageCornersDebug } from "./PageDetection.js";
 
 			const fileInput = document.getElementById("fileInput");
 			const canvas = document.getElementById("canvas");
 			const ctx = canvas.getContext("2d");
 			const status = document.getElementById("status");
+
+			function drawMask(canvasEl, mask, width, height) {
+				canvasEl.width = width;
+				canvasEl.height = height;
+				const c = canvasEl.getContext("2d");
+				const imgData = c.createImageData(width, height);
+				for (let i = 0; i < mask.length; i++) {
+					const v = mask[i];
+					imgData.data[i * 4] = v;
+					imgData.data[i * 4 + 1] = v;
+					imgData.data[i * 4 + 2] = v;
+					imgData.data[i * 4 + 3] = 255;
+				}
+				c.putImageData(imgData, 0, 0);
+			}
 
 			fileInput.addEventListener("change", (e) => {
 				const file = e.target.files[0];
@@ -90,8 +119,22 @@
 					const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 
 					const t0 = performance.now();
-					const corners = detectPageCorners(imageData);
+					const { corners, hull, debug } = detectPageCornersDebug(imageData);
 					const elapsed = (performance.now() - t0).toFixed(1);
+
+					drawMask(document.getElementById("paperMaskCanvas"), debug.paperMask, debug.width, debug.height);
+					drawMask(document.getElementById("edgesCanvas"), debug.edges, debug.width, debug.height);
+					drawMask(document.getElementById("combinedCanvas"), debug.combined, debug.width, debug.height);
+
+					// Draw hull points (small orange dots) for diagnostics
+					if (hull) {
+						ctx.fillStyle = "#ff8800";
+						for (const p of hull) {
+							ctx.beginPath();
+							ctx.arc(p.x, p.y, Math.max(2, img.width / 200), 0, 2 * Math.PI);
+							ctx.fill();
+						}
+					}
 
 					if (!corners) {
 						status.textContent = `No page detected. (${elapsed}ms)`;

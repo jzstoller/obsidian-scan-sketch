@@ -1,29 +1,37 @@
 // Services/PageDetection.ts
 var DETECTION_MAX_DIM = 800;
 function detectPageCorners(imageData) {
+  const result = detectPageCornersDebug(imageData);
+  return result.corners;
+}
+function detectPageCornersDebug(imageData) {
   const { data: scaled, scale, width, height } = downscale(imageData, DETECTION_MAX_DIM);
   const { saturation, value } = toHSVChannels(scaled, width, height);
   const satMask = thresholdBelow(saturation, width, height, 100);
   const valMask = thresholdAbove(value, width, height, 120);
   const paperMask = bitwiseAnd(satMask, valMask, width, height);
   const gray = toGrayscale(scaled, width, height);
-  const blurred = gaussianBlur5x5(gray, width, height);
+  const denoised = medianFilter5x5(gray, width, height);
+  const blurred = gaussianBlur5x5(denoised, width, height);
   const { magnitude, direction } = sobel(blurred, width, height);
   const suppressed = nonMaxSuppression(magnitude, direction, width, height);
   let edges = hysteresisThreshold(suppressed, width, height, 50, 100);
   edges = dilate3x3(edges, width, height);
-  const combined = bitwiseAnd(edges, paperMask, width, height);
-  const contours = findContours(combined, width, height);
+  const contours = findContours(edges, width, height);
+  const debug = { paperMask, edges, combined: edges, width, height };
   if (contours.length === 0)
-    return null;
+    return { corners: null, hull: null, debug };
   const candidates = contours.map((c) => ({ contour: c, area: contourArea(c) })).sort((a, b) => b.area - a.area);
+  let firstHull = null;
   for (const { contour } of candidates) {
     if (contour.length < 4)
       continue;
     const hull = convexHull(contour);
     if (hull.length < 4)
       continue;
-    let quad = approxPolyDP(hull, 0.04 * perimeter(hull));
+    if (!firstHull)
+      firstHull = hull.map((p) => ({ x: p.x / scale, y: p.y / scale }));
+    let quad = approxPolyDP(hull, 0.02 * perimeter(hull));
     if (quad.length !== 4) {
       quad = boundingQuadFromHull(hull);
     }
@@ -33,9 +41,10 @@ function detectPageCorners(imageData) {
     if (!isValidQuad(ordered) || !quadOverlapsPaper(ordered, paperMask, width, height)) {
       continue;
     }
-    return ordered.map((p) => ({ x: p.x / scale, y: p.y / scale, isDragging: false }));
+    const corners = ordered.map((p) => ({ x: p.x / scale, y: p.y / scale, isDragging: false }));
+    return { corners, hull: firstHull, debug };
   }
-  return null;
+  return { corners: null, hull: firstHull, debug };
 }
 function downscale(imageData, maxDim) {
   const { width: w, height: h, data } = imageData;
@@ -84,6 +93,25 @@ function toHSVChannels(data, width, height) {
     value[i] = Math.round(v * 255);
   }
   return { saturation, value };
+}
+function medianFilter5x5(src, width, height) {
+  const out = new Float32Array(width * height);
+  const window = new Float32Array(25);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let n = 0;
+      for (let ky = -2; ky <= 2; ky++) {
+        for (let kx = -2; kx <= 2; kx++) {
+          const sx = clamp(x + kx, 0, width - 1);
+          const sy = clamp(y + ky, 0, height - 1);
+          window[n++] = src[sy * width + sx];
+        }
+      }
+      const sorted = Array.from(window).sort((a, b) => a - b);
+      out[y * width + x] = sorted[12];
+    }
+  }
+  return out;
 }
 function gaussianBlur5x5(src, width, height) {
   const kernel = [2, 4, 5, 4, 2, 4, 9, 12, 9, 4, 5, 12, 15, 12, 5, 4, 9, 12, 9, 4, 2, 4, 5, 4, 2];
@@ -276,7 +304,7 @@ function findContours(edges, width, height) {
           }
         }
       }
-      if (component.length > 20)
+      if (component.length > 60)
         contours.push(component);
     }
   }
@@ -448,5 +476,6 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 export {
-  detectPageCorners
+  detectPageCorners,
+  detectPageCornersDebug
 };

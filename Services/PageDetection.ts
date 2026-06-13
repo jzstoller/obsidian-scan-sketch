@@ -8,6 +8,18 @@ const DETECTION_MAX_DIM = 800;
  * or null if no confident quad was found.
  */
 export function detectPageCorners(imageData: ImageData): CropPoint[] | null {
+	const result = detectPageCornersDebug(imageData);
+	return result.corners;
+}
+
+/**
+ * Debug variant that also returns intermediate masks for visualization.
+ */
+export function detectPageCornersDebug(imageData: ImageData): {
+	corners: CropPoint[] | null;
+	hull: Point[] | null;
+	debug: { paperMask: Uint8Array; edges: Uint8Array; combined: Uint8Array; width: number; height: number };
+} {
 	const { data: scaled, scale, width, height } = downscale(imageData, DETECTION_MAX_DIM);
 
 	// --- Paper mask: low saturation AND high brightness ---
@@ -18,23 +30,30 @@ export function detectPageCorners(imageData: ImageData): CropPoint[] | null {
 
 	// --- Edge map ---
 	const gray = toGrayscale(scaled, width, height);
-	const blurred = gaussianBlur5x5(gray, width, height);
+	// Median filter suppresses fine texture (carpet, fabric grain) while
+	// preserving strong straight edges like the page boundary — closer to
+	// the bilateral filter used in the OpenCV reference pipeline.
+	const denoised = medianFilter5x5(gray, width, height);
+	const blurred = gaussianBlur5x5(denoised, width, height);
 	const { magnitude, direction } = sobel(blurred, width, height);
 	const suppressed = nonMaxSuppression(magnitude, direction, width, height);
 	let edges = hysteresisThreshold(suppressed, width, height, 50, 100);
 	edges = dilate3x3(edges, width, height);
 
-	// --- Combined signal: edges AND paper mask ---
-	const combined = bitwiseAnd(edges, paperMask, width, height);
+	// --- Contours: use edges alone so non-paper regions (e.g. colored
+	// objects) at the page boundary don't break the outline. paperMask
+	// is still used later in quadOverlapsPaper for validation. ---
+	const contours = findContours(edges, width, height);
+	const debug = { paperMask, edges, combined: edges, width, height };
 
-	// --- Contours ---
-	const contours = findContours(combined, width, height);
-	if (contours.length === 0) return null;
+	if (contours.length === 0) return { corners: null, hull: null, debug };
 
 	// Sort candidates by area, largest first, and validate until one passes
 	const candidates = contours
 		.map((c) => ({ contour: c, area: contourArea(c) }))
 		.sort((a, b) => b.area - a.area);
+
+	let firstHull: Point[] | null = null;
 
 	for (const { contour } of candidates) {
 		if (contour.length < 4) continue;
@@ -42,7 +61,9 @@ export function detectPageCorners(imageData: ImageData): CropPoint[] | null {
 		const hull = convexHull(contour);
 		if (hull.length < 4) continue;
 
-		let quad = approxPolyDP(hull, 0.04 * perimeter(hull));
+		if (!firstHull) firstHull = hull.map((p) => ({ x: p.x / scale, y: p.y / scale }));
+
+		let quad = approxPolyDP(hull, 0.02 * perimeter(hull));
 		if (quad.length !== 4) {
 			quad = boundingQuadFromHull(hull);
 		}
@@ -55,10 +76,11 @@ export function detectPageCorners(imageData: ImageData): CropPoint[] | null {
 		}
 
 		// map back to original resolution
-		return ordered.map((p) => ({ x: p.x / scale, y: p.y / scale, isDragging: false }));
+		const corners = ordered.map((p) => ({ x: p.x / scale, y: p.y / scale, isDragging: false }));
+		return { corners, hull: firstHull, debug };
 	}
 
-	return null;
+	return { corners: null, hull: firstHull, debug };
 }
 
 // ---------- Preprocessing ----------
@@ -129,6 +151,33 @@ function toHSVChannels(
 	}
 
 	return { saturation, value };
+}
+
+/**
+ * 5x5 median filter. Strong texture/noise suppression that preserves
+ * sharp edges better than a mean/Gaussian blur (closer in effect to
+ * the bilateral filter used in the OpenCV reference pipeline).
+ */
+function medianFilter5x5(src: Float32Array, width: number, height: number): Float32Array {
+	const out = new Float32Array(width * height);
+	const window = new Float32Array(25);
+
+	for (let y = 0; y < height; y++) {
+		for (let x = 0; x < width; x++) {
+			let n = 0;
+			for (let ky = -2; ky <= 2; ky++) {
+				for (let kx = -2; kx <= 2; kx++) {
+					const sx = clamp(x + kx, 0, width - 1);
+					const sy = clamp(y + ky, 0, height - 1);
+					window[n++] = src[sy * width + sx];
+				}
+			}
+			// Sort the 25-element window and take the middle value
+			const sorted = Array.from(window).sort((a, b) => a - b);
+			out[y * width + x] = sorted[12];
+		}
+	}
+	return out;
 }
 
 function gaussianBlur5x5(src: Float32Array, width: number, height: number): Float32Array {
@@ -365,7 +414,7 @@ function findContours(edges: Uint8Array, width: number, height: number): Point[]
 				}
 			}
 
-			if (component.length > 20) contours.push(component);
+			if (component.length > 60) contours.push(component);
 		}
 	}
 
