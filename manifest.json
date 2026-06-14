@@ -7,5 +7,6 @@
 	"author": "Show Wai Yan",
 	"authorUrl": "https://github.com/Showwaiyan",
 	"fundingUrl": "https://buymeacoffee.com/showwaiyan",
-	"isDesktopOnly": false
+	"isDesktopOnly": false,
+	"icon": "camera"
 }
