@@ -1,59 +1,55 @@
 import type { CropPoint, Point } from "./types";
 
+export const PAGE_DETECTION_VERSION = "2026-06-14T11:25 ET";
+
 const DETECTION_MAX_DIM = 800;
 
 /**
  * Attempts to detect the four corners of a page/document within the image.
  * Returns points in TL, TR, BR, BL order in full-resolution coordinates,
  * or null if no confident quad was found.
+ *
+ * Pipeline:
+ *   Downscale → HSV paper mask → Median blur → Gaussian blur →
+ *   Sobel → NMS → Hysteresis → Dilate ×2 → Contours →
+ *   Convex hull → Quad approx → Validate → Scale back up
  */
 export function detectPageCorners(imageData: ImageData): CropPoint[] | null {
-	const result = detectPageCornersDebug(imageData);
-	return result.corners;
-}
-
-/**
- * Debug variant that also returns intermediate masks for visualization.
- */
-export function detectPageCornersDebug(imageData: ImageData): {
-	corners: CropPoint[] | null;
-	hull: Point[] | null;
-	debug: { paperMask: Uint8Array; edges: Uint8Array; combined: Uint8Array; width: number; height: number };
-} {
 	const { data: scaled, scale, width, height } = downscale(imageData, DETECTION_MAX_DIM);
 
-	// --- Paper mask: low saturation AND high brightness ---
+	// Paper mask: low saturation AND high brightness = paper/white regions
 	const { saturation, value } = toHSVChannels(scaled, width, height);
-	const satMask = thresholdBelow(saturation, width, height, 100); // low sat = paper
-	const valMask = thresholdAbove(value, width, height, 120); // bright = paper
+	const satMask = thresholdBelow(saturation, width, height, 100);
+	const valMask = thresholdAbove(value, width, height, 120);
 	const paperMask = bitwiseAnd(satMask, valMask, width, height);
 
-	// --- Edge map ---
+	// Edge map
 	const gray = toGrayscale(scaled, width, height);
-	// Median filter suppresses fine texture (carpet, fabric grain) while
-	// preserving strong straight edges like the page boundary — closer to
-	// the bilateral filter used in the OpenCV reference pipeline.
 	const denoised = medianFilter5x5(gray, width, height);
 	const blurred = gaussianBlur5x5(denoised, width, height);
 	const { magnitude, direction } = sobel(blurred, width, height);
 	const suppressed = nonMaxSuppression(magnitude, direction, width, height);
-	let edges = hysteresisThreshold(suppressed, width, height, 50, 100);
+	let edges = hysteresisThreshold(suppressed, width, height, 50, 150);
+	// Double dilation closes gaps at corners where the page boundary is weak
+	edges = dilate3x3(edges, width, height);
 	edges = dilate3x3(edges, width, height);
 
-	// --- Contours: use edges alone so non-paper regions (e.g. colored
-	// objects) at the page boundary don't break the outline. paperMask
-	// is still used later in quadOverlapsPaper for validation. ---
 	const contours = findContours(edges, width, height);
-	const debug = { paperMask, edges, combined: edges, width, height };
+	const result = findBestQuad(contours, paperMask, edges, width, height, scale);
+	return result;
+}
 
-	if (contours.length === 0) return { corners: null, hull: null, debug };
-
-	// Sort candidates by area, largest first, and validate until one passes
+function findBestQuad(
+	contours: Point[][],
+	paperMask: Uint8Array,
+	edges: Uint8Array,
+	width: number,
+	height: number,
+	scale: number
+): CropPoint[] | null {
 	const candidates = contours
 		.map((c) => ({ contour: c, area: contourArea(c) }))
 		.sort((a, b) => b.area - a.area);
-
-	let firstHull: Point[] | null = null;
 
 	for (const { contour } of candidates) {
 		if (contour.length < 4) continue;
@@ -61,26 +57,30 @@ export function detectPageCornersDebug(imageData: ImageData): {
 		const hull = convexHull(contour);
 		if (hull.length < 4) continue;
 
-		if (!firstHull) firstHull = hull.map((p) => ({ x: p.x / scale, y: p.y / scale }));
-
 		let quad = approxPolyDP(hull, 0.02 * perimeter(hull));
-		if (quad.length !== 4) {
-			quad = boundingQuadFromHull(hull);
-		}
+		if (quad.length !== 4) quad = boundingQuadFromHull(hull);
 		if (quad.length !== 4) continue;
 
-		const ordered = orderCorners(quad);
+		const ordered = orderCorners(quad, width, height);
+		if (!isValidQuad(ordered)) continue;
 
-		if (!isValidQuad(ordered) || !quadOverlapsPaper(ordered, paperMask, width, height)) {
-			continue;
-		}
+		// Reject quads smaller than 30% of image area (e.g. credit cards on page)
+		const quadW = Math.max(
+			Math.hypot(ordered[1].x - ordered[0].x, ordered[1].y - ordered[0].y),
+			Math.hypot(ordered[2].x - ordered[3].x, ordered[2].y - ordered[3].y)
+		);
+		const quadH = Math.max(
+			Math.hypot(ordered[3].x - ordered[0].x, ordered[3].y - ordered[0].y),
+			Math.hypot(ordered[2].x - ordered[1].x, ordered[2].y - ordered[1].y)
+		);
+		if ((quadW * quadH) / (width * height) < 0.30) continue;
 
-		// map back to original resolution
-		const corners = ordered.map((p) => ({ x: p.x / scale, y: p.y / scale, isDragging: false }));
-		return { corners, hull: firstHull, debug };
+		if (!quadOverlapsPaper(ordered, paperMask, width, height)) continue;
+		if (!cornersHaveEdgeSupport(ordered, edges, width, height)) continue;
+
+		return ordered.map((p) => ({ x: p.x / scale, y: p.y / scale, isDragging: false }));
 	}
-
-	return { corners: null, hull: firstHull, debug };
+	return null;
 }
 
 // ---------- Preprocessing ----------
@@ -109,25 +109,17 @@ function downscale(
 			out[dstIdx + 3] = data[srcIdx + 3];
 		}
 	}
-
 	return { data: out, scale, width, height };
 }
 
 function toGrayscale(data: Uint8ClampedArray, width: number, height: number): Float32Array {
 	const gray = new Float32Array(width * height);
 	for (let i = 0; i < width * height; i++) {
-		const r = data[i * 4];
-		const g = data[i * 4 + 1];
-		const b = data[i * 4 + 2];
-		gray[i] = 0.299 * r + 0.587 * g + 0.114 * b;
+		gray[i] = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
 	}
 	return gray;
 }
 
-/**
- * Converts RGBA pixel data to HSV saturation and value channels.
- * Both returned as Uint8 arrays in the 0-255 range.
- */
 function toHSVChannels(
 	data: Uint8ClampedArray,
 	width: number,
@@ -135,46 +127,28 @@ function toHSVChannels(
 ): { saturation: Uint8Array; value: Uint8Array } {
 	const saturation = new Uint8Array(width * height);
 	const value = new Uint8Array(width * height);
-
 	for (let i = 0; i < width * height; i++) {
 		const r = data[i * 4] / 255;
 		const g = data[i * 4 + 1] / 255;
 		const b = data[i * 4 + 2] / 255;
-
 		const max = Math.max(r, g, b);
 		const min = Math.min(r, g, b);
-		const v = max;
-		const s = max === 0 ? 0 : (max - min) / max;
-
-		saturation[i] = Math.round(s * 255);
-		value[i] = Math.round(v * 255);
+		saturation[i] = Math.round((max === 0 ? 0 : (max - min) / max) * 255);
+		value[i] = Math.round(max * 255);
 	}
-
 	return { saturation, value };
 }
 
-/**
- * 5x5 median filter. Strong texture/noise suppression that preserves
- * sharp edges better than a mean/Gaussian blur (closer in effect to
- * the bilateral filter used in the OpenCV reference pipeline).
- */
 function medianFilter5x5(src: Float32Array, width: number, height: number): Float32Array {
 	const out = new Float32Array(width * height);
-	const window = new Float32Array(25);
-
 	for (let y = 0; y < height; y++) {
 		for (let x = 0; x < width; x++) {
-			let n = 0;
-			for (let ky = -2; ky <= 2; ky++) {
-				for (let kx = -2; kx <= 2; kx++) {
-					const sx = clamp(x + kx, 0, width - 1);
-					const sy = clamp(y + ky, 0, height - 1);
-					window[n++] = src[sy * width + sx];
-				}
-			}
-			// Sort the 25-element window and take the middle value
-			const sorted = Array.from(window).sort((a, b) => a - b);
-			out[y * width + x] = sorted[12];
+			const window: number[] = [];
+			for (let ky = -2; ky <= 2; ky++)
+				for (let kx = -2; kx <= 2; kx++)
+					window.push(src[clamp(y + ky, 0, height - 1) * width + clamp(x + kx, 0, width - 1)]);
+			window.sort((a, b) => a - b);
+			out[y * width + x] = window[12];
 		}
 	}
 	return out;
@@ -182,49 +156,36 @@ function medianFilter5x5(src: Float32Array, width: number, height: number): Floa
 
 function gaussianBlur5x5(src: Float32Array, width: number, height: number): Float32Array {
 	const kernel = [2, 4, 5, 4, 2, 4, 9, 12, 9, 4, 5, 12, 15, 12, 5, 4, 9, 12, 9, 4, 2, 4, 5, 4, 2];
-	const kernelSum = 159;
 	const out = new Float32Array(width * height);
-
 	for (let y = 0; y < height; y++) {
 		for (let x = 0; x < width; x++) {
-			let sum = 0;
-			let k = 0;
-			for (let ky = -2; ky <= 2; ky++) {
-				for (let kx = -2; kx <= 2; kx++) {
-					const sx = clamp(x + kx, 0, width - 1);
-					const sy = clamp(y + ky, 0, height - 1);
-					sum += src[sy * width + sx] * kernel[k++];
-				}
-			}
-			out[y * width + x] = sum / kernelSum;
+			let sum = 0, k = 0;
+			for (let ky = -2; ky <= 2; ky++)
+				for (let kx = -2; kx <= 2; kx++)
+					sum += src[clamp(y + ky, 0, height - 1) * width + clamp(x + kx, 0, width - 1)] * kernel[k++];
+			out[y * width + x] = sum / 159;
 		}
 	}
 	return out;
 }
 
-// ---------- Binary mask ops ----------
+// ---------- Binary ops ----------
 
 function thresholdAbove(src: Uint8Array, width: number, height: number, value: number): Uint8Array {
 	const out = new Uint8Array(width * height);
-	for (let i = 0; i < src.length; i++) {
-		out[i] = src[i] >= value ? 255 : 0;
-	}
+	for (let i = 0; i < src.length; i++) out[i] = src[i] >= value ? 255 : 0;
 	return out;
 }
 
 function thresholdBelow(src: Uint8Array, width: number, height: number, value: number): Uint8Array {
 	const out = new Uint8Array(width * height);
-	for (let i = 0; i < src.length; i++) {
-		out[i] = src[i] < value ? 255 : 0;
-	}
+	for (let i = 0; i < src.length; i++) out[i] = src[i] < value ? 255 : 0;
 	return out;
 }
 
 function bitwiseAnd(a: Uint8Array, b: Uint8Array, width: number, height: number): Uint8Array {
 	const out = new Uint8Array(width * height);
-	for (let i = 0; i < out.length; i++) {
-		out[i] = a[i] !== 0 && b[i] !== 0 ? 255 : 0;
-	}
+	for (let i = 0; i < out.length; i++) out[i] = a[i] !== 0 && b[i] !== 0 ? 255 : 0;
 	return out;
 }
 
@@ -233,17 +194,13 @@ function dilate3x3(src: Uint8Array, width: number, height: number): Uint8Array {
 	for (let y = 0; y < height; y++) {
 		for (let x = 0; x < width; x++) {
 			let any = false;
-			for (let ky = -1; ky <= 1 && !any; ky++) {
+			for (let ky = -1; ky <= 1 && !any; ky++)
 				for (let kx = -1; kx <= 1; kx++) {
-					const sx = x + kx;
-					const sy = y + ky;
-					if (sx < 0 || sx >= width || sy < 0 || sy >= height) continue;
-					if (src[sy * width + sx] !== 0) {
-						any = true;
-						break;
+					const sx = x + kx, sy = y + ky;
+					if (sx >= 0 && sx < width && sy >= 0 && sy < height && src[sy * width + sx] !== 0) {
+						any = true; break;
 					}
 				}
-			}
 			out[y * width + x] = any ? 255 : 0;
 		}
 	}
@@ -252,98 +209,53 @@ function dilate3x3(src: Uint8Array, width: number, height: number): Uint8Array {
 
 // ---------- Edge detection ----------
 
-function sobel(
-	src: Float32Array,
-	width: number,
-	height: number
-): { magnitude: Float32Array; direction: Float32Array } {
+function sobel(src: Float32Array, width: number, height: number): { magnitude: Float32Array; direction: Float32Array } {
 	const magnitude = new Float32Array(width * height);
 	const direction = new Float32Array(width * height);
-
 	const gx = [-1, 0, 1, -2, 0, 2, -1, 0, 1];
 	const gy = [-1, -2, -1, 0, 0, 0, 1, 2, 1];
-
 	for (let y = 0; y < height; y++) {
 		for (let x = 0; x < width; x++) {
-			let sx = 0;
-			let sy = 0;
-			let k = 0;
-			for (let ky = -1; ky <= 1; ky++) {
+			let sx = 0, sy = 0, k = 0;
+			for (let ky = -1; ky <= 1; ky++)
 				for (let kx = -1; kx <= 1; kx++) {
-					const px = clamp(x + kx, 0, width - 1);
-					const py = clamp(y + ky, 0, height - 1);
-					const val = src[py * width + px];
-					sx += val * gx[k];
-					sy += val * gy[k];
-					k++;
+					const v = src[clamp(y + ky, 0, height - 1) * width + clamp(x + kx, 0, width - 1)];
+					sx += v * gx[k]; sy += v * gy[k]; k++;
 				}
-			}
 			const idx = y * width + x;
 			magnitude[idx] = Math.sqrt(sx * sx + sy * sy);
 			direction[idx] = Math.atan2(sy, sx);
 		}
 	}
-
 	return { magnitude, direction };
 }
 
-function nonMaxSuppression(
-	magnitude: Float32Array,
-	direction: Float32Array,
-	width: number,
-	height: number
-): Float32Array {
+function nonMaxSuppression(magnitude: Float32Array, direction: Float32Array, width: number, height: number): Float32Array {
 	const out = new Float32Array(width * height);
-
 	for (let y = 1; y < height - 1; y++) {
 		for (let x = 1; x < width - 1; x++) {
 			const idx = y * width + x;
 			let angle = direction[idx] * (180 / Math.PI);
 			if (angle < 0) angle += 180;
-
-			let n1: number;
-			let n2: number;
-
-			if ((angle >= 0 && angle < 22.5) || (angle >= 157.5 && angle <= 180)) {
-				n1 = magnitude[idx - 1];
-				n2 = magnitude[idx + 1];
-			} else if (angle >= 22.5 && angle < 67.5) {
-				n1 = magnitude[idx - width + 1];
-				n2 = magnitude[idx + width - 1];
-			} else if (angle >= 67.5 && angle < 112.5) {
-				n1 = magnitude[idx - width];
-				n2 = magnitude[idx + width];
-			} else {
-				n1 = magnitude[idx - width - 1];
-				n2 = magnitude[idx + width + 1];
-			}
-
+			let n1: number, n2: number;
+			if ((angle >= 0 && angle < 22.5) || (angle >= 157.5 && angle <= 180)) { n1 = magnitude[idx - 1]; n2 = magnitude[idx + 1]; }
+			else if (angle >= 22.5 && angle < 67.5) { n1 = magnitude[idx - width + 1]; n2 = magnitude[idx + width - 1]; }
+			else if (angle >= 67.5 && angle < 112.5) { n1 = magnitude[idx - width]; n2 = magnitude[idx + width]; }
+			else { n1 = magnitude[idx - width - 1]; n2 = magnitude[idx + width + 1]; }
 			const m = magnitude[idx];
 			out[idx] = m >= n1 && m >= n2 ? m : 0;
 		}
 	}
-
 	return out;
 }
 
-function hysteresisThreshold(
-	src: Float32Array,
-	width: number,
-	height: number,
-	low: number,
-	high: number
-): Uint8Array {
-	const strong = 255;
-	const weak = 75;
+function hysteresisThreshold(src: Float32Array, width: number, height: number, low: number, high: number): Uint8Array {
+	const strong = 255, weak = 75;
 	const out = new Uint8Array(width * height);
-
 	for (let i = 0; i < src.length; i++) {
 		if (src[i] >= high) out[i] = strong;
 		else if (src[i] >= low) out[i] = weak;
-		else out[i] = 0;
 	}
-
-	// promote weak edges connected to strong edges
 	let changed = true;
 	while (changed) {
 		changed = false;
@@ -351,88 +263,53 @@ function hysteresisThreshold(
 			for (let x = 1; x < width - 1; x++) {
 				const idx = y * width + x;
 				if (out[idx] !== weak) continue;
-
-				for (let ky = -1; ky <= 1; ky++) {
-					for (let kx = -1; kx <= 1; kx++) {
-						if (out[(y + ky) * width + (x + kx)] === strong) {
-							out[idx] = strong;
-							changed = true;
-							break;
-						}
-					}
-					if (out[idx] === strong) break;
-				}
+				for (let ky = -1; ky <= 1; ky++)
+					for (let kx = -1; kx <= 1; kx++)
+						if (out[(y + ky) * width + (x + kx)] === strong) { out[idx] = strong; changed = true; }
 			}
 		}
 	}
-
-	// remove remaining weak edges
-	for (let i = 0; i < out.length; i++) {
-		if (out[i] === weak) out[i] = 0;
-	}
-
+	for (let i = 0; i < out.length; i++) if (out[i] === weak) out[i] = 0;
 	return out;
 }
 
 // ---------- Contours ----------
 
-/**
- * Finds connected components of edge pixels via flood fill.
- * Returns each as an array of points (unordered).
- */
 function findContours(edges: Uint8Array, width: number, height: number): Point[][] {
 	const visited = new Uint8Array(width * height);
 	const contours: Point[][] = [];
-
 	for (let y = 0; y < height; y++) {
 		for (let x = 0; x < width; x++) {
 			const idx = y * width + x;
 			if (edges[idx] === 0 || visited[idx]) continue;
-
 			const component: Point[] = [];
-			const stack: number[] = [idx];
+			const stack = [idx];
 			visited[idx] = 1;
-
 			while (stack.length > 0) {
 				const cur = stack.pop()!;
-				const cx = cur % width;
-				const cy = Math.floor(cur / width);
+				const cx = cur % width, cy = Math.floor(cur / width);
 				component.push({ x: cx, y: cy });
-
-				for (let ny = -1; ny <= 1; ny++) {
+				for (let ny = -1; ny <= 1; ny++)
 					for (let nx = -1; nx <= 1; nx++) {
 						if (nx === 0 && ny === 0) continue;
-						const px = cx + nx;
-						const py = cy + ny;
+						const px = cx + nx, py = cy + ny;
 						if (px < 0 || px >= width || py < 0 || py >= height) continue;
 						const pidx = py * width + px;
-						if (edges[pidx] !== 0 && !visited[pidx]) {
-							visited[pidx] = 1;
-							stack.push(pidx);
-						}
+						if (edges[pidx] !== 0 && !visited[pidx]) { visited[pidx] = 1; stack.push(pidx); }
 					}
-				}
 			}
-
 			if (component.length > 60) contours.push(component);
 		}
 	}
-
 	return contours;
 }
 
-/**
- * Approximate area of a point set via its convex hull (shoelace formula).
- * Used only for ranking candidates by size.
- */
 function contourArea(points: Point[]): number {
 	const hull = convexHull(points);
 	if (hull.length < 3) return 0;
-
 	let area = 0;
 	for (let i = 0; i < hull.length; i++) {
-		const a = hull[i];
-		const b = hull[(i + 1) % hull.length];
+		const a = hull[i], b = hull[(i + 1) % hull.length];
 		area += a.x * b.y - b.x * a.y;
 	}
 	return Math.abs(area) / 2;
@@ -441,210 +318,154 @@ function contourArea(points: Point[]): number {
 function perimeter(points: Point[]): number {
 	let total = 0;
 	for (let i = 0; i < points.length; i++) {
-		const a = points[i];
-		const b = points[(i + 1) % points.length];
+		const a = points[i], b = points[(i + 1) % points.length];
 		total += Math.hypot(b.x - a.x, b.y - a.y);
 	}
 	return total;
 }
 
-/**
- * Douglas-Peucker polygon simplification.
- * Expects a roughly ordered boundary loop (e.g. a convex hull).
- */
 function approxPolyDP(points: Point[], epsilon: number): Point[] {
 	if (points.length < 3) return points;
-
-	const dmaxInfo = findFarthestPoint(points, points[0], points[points.length - 1]);
-
-	if (dmaxInfo.distance > epsilon) {
-		const left = approxPolyDP(points.slice(0, dmaxInfo.index + 1), epsilon);
-		const right = approxPolyDP(points.slice(dmaxInfo.index), epsilon);
+	const { index, distance } = findFarthestPoint(points, points[0], points[points.length - 1]);
+	if (distance > epsilon) {
+		const left = approxPolyDP(points.slice(0, index + 1), epsilon);
+		const right = approxPolyDP(points.slice(index), epsilon);
 		return [...left.slice(0, -1), ...right];
 	}
-
 	return [points[0], points[points.length - 1]];
 }
 
-function findFarthestPoint(
-	points: Point[],
-	lineStart: Point,
-	lineEnd: Point
-): { index: number; distance: number } {
-	let maxDist = 0;
-	let maxIdx = 0;
-
+function findFarthestPoint(points: Point[], lineStart: Point, lineEnd: Point): { index: number; distance: number } {
+	let maxDist = 0, maxIdx = 0;
 	for (let i = 1; i < points.length - 1; i++) {
 		const d = pointToLineDistance(points[i], lineStart, lineEnd);
-		if (d > maxDist) {
-			maxDist = d;
-			maxIdx = i;
-		}
+		if (d > maxDist) { maxDist = d; maxIdx = i; }
 	}
-
 	return { index: maxIdx, distance: maxDist };
 }
 
 function pointToLineDistance(p: Point, a: Point, b: Point): number {
-	const dx = b.x - a.x;
-	const dy = b.y - a.y;
+	const dx = b.x - a.x, dy = b.y - a.y;
 	const len = Math.hypot(dx, dy);
 	if (len === 0) return Math.hypot(p.x - a.x, p.y - a.y);
 	return Math.abs((p.x - a.x) * dy - (p.y - a.y) * dx) / len;
 }
 
-/**
- * Andrew's monotone chain convex hull algorithm.
- */
 function convexHull(points: Point[]): Point[] {
-	const sorted = [...points].sort((a, b) => (a.x === b.x ? a.y - b.y : a.x - b.x));
+	const sorted = [...points].sort((a, b) => a.x === b.x ? a.y - b.y : a.x - b.x);
 	if (sorted.length <= 2) return sorted;
-
-	const cross = (o: Point, a: Point, b: Point) =>
-		(a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-
+	const cross = (o: Point, a: Point, b: Point) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
 	const lower: Point[] = [];
 	for (const p of sorted) {
-		while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) {
-			lower.pop();
-		}
+		while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop();
 		lower.push(p);
 	}
-
 	const upper: Point[] = [];
 	for (let i = sorted.length - 1; i >= 0; i--) {
 		const p = sorted[i];
-		while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) {
-			upper.pop();
-		}
+		while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop();
 		upper.push(p);
 	}
-
-	upper.pop();
-	lower.pop();
+	upper.pop(); lower.pop();
 	return [...lower, ...upper];
 }
 
-/**
- * Fallback: derive 4 corner points from a convex hull using the
- * min/max (x+y) and (x-y) extremes.
- */
 function boundingQuadFromHull(hull: Point[]): Point[] {
 	if (hull.length < 4) return [];
-
-	let tl = hull[0];
-	let br = hull[0];
-	let tr = hull[0];
-	let bl = hull[0];
-
+	let tl = hull[0], br = hull[0], tr = hull[0], bl = hull[0];
 	for (const p of hull) {
 		if (p.x + p.y < tl.x + tl.y) tl = p;
 		if (p.x + p.y > br.x + br.y) br = p;
 		if (p.x - p.y > tr.x - tr.y) tr = p;
 		if (p.x - p.y < bl.x - bl.y) bl = p;
 	}
-
 	return [tl, tr, br, bl];
 }
 
-// ---------- Corner ordering ----------
-
 /**
- * Orders 4 arbitrary points into TL, TR, BR, BL using sum/diff extremes.
+ * Orders 4 points into TL, TR, BR, BL by finding the point closest
+ * to each image corner. More robust than sum/diff extremes when interior
+ * edges protrude further diagonally than the true page corners.
  */
-function orderCorners(points: Point[]): Point[] {
-	let tl = points[0];
-	let br = points[0];
-	let tr = points[0];
-	let bl = points[0];
-
+function orderCorners(points: Point[], imgWidth = 0, imgHeight = 0): Point[] {
+	if (imgWidth > 0 && imgHeight > 0 && points.length >= 4) {
+		const imageCorners = [
+			{ x: 0, y: 0 },
+			{ x: imgWidth, y: 0 },
+			{ x: imgWidth, y: imgHeight },
+			{ x: 0, y: imgHeight },
+		];
+		const result: Point[] = [];
+		const used = new Set<number>();
+		for (const ic of imageCorners) {
+			let bestDist = Infinity, bestIdx = -1;
+			for (let i = 0; i < points.length; i++) {
+				if (used.has(i)) continue;
+				const d = Math.hypot(points[i].x - ic.x, points[i].y - ic.y);
+				if (d < bestDist) { bestDist = d; bestIdx = i; }
+			}
+			if (bestIdx >= 0) { result.push(points[bestIdx]); used.add(bestIdx); }
+		}
+		if (result.length === 4) return result;
+	}
+	// Fallback: sum/diff extremes
+	let tl = points[0], br = points[0], tr = points[0], bl = points[0];
 	for (const p of points) {
 		if (p.x + p.y < tl.x + tl.y) tl = p;
 		if (p.x + p.y > br.x + br.y) br = p;
 		if (p.x - p.y > tr.x - tr.y) tr = p;
 		if (p.x - p.y < bl.x - bl.y) bl = p;
 	}
-
 	return [tl, tr, br, bl];
 }
 
-// ---------- Validation (ported from OpenCV.js test harness) ----------
+// ---------- Validation ----------
 
 function dist(a: Point, b: Point): number {
 	return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-/**
- * Validates a candidate quad against document-shape heuristics:
- * no degenerate points, plausible aspect ratio, and opposite sides
- * of similar length (rejects extreme trapezoids).
- *
- * Expects points in [TL, TR, BR, BL] order, as returned by orderCorners.
- */
 function isValidQuad(ordered: Point[]): boolean {
-	// Check for near-duplicate points (degenerate shapes)
-	for (let i = 0; i < ordered.length; i++) {
-		for (let j = i + 1; j < ordered.length; j++) {
+	for (let i = 0; i < ordered.length; i++)
+		for (let j = i + 1; j < ordered.length; j++)
 			if (dist(ordered[i], ordered[j]) < 10) return false;
-		}
-	}
 
 	const [tl, tr, br, bl] = ordered;
-
-	const topDist = dist(tl, tr);
-	const bottomDist = dist(bl, br);
-	const leftDist = dist(tl, bl);
-	const rightDist = dist(tr, br);
-
-	// Aspect ratio: documents are typically 0.3 to 3.0 (portrait to landscape)
-	const widthAvg = (topDist + bottomDist) / 2;
-	const heightAvg = (leftDist + rightDist) / 2;
-	const aspectRatio = widthAvg / heightAvg;
+	const topDist = dist(tl, tr), bottomDist = dist(bl, br);
+	const leftDist = dist(tl, bl), rightDist = dist(tr, br);
+	const aspectRatio = (topDist + bottomDist) / (leftDist + rightDist);
 	if (aspectRatio < 0.3 || aspectRatio > 3.0) return false;
-
-	// Opposite sides should be similar length (reject trapezoids)
-	const topBottomRatio = Math.max(topDist, bottomDist) / Math.min(topDist, bottomDist);
-	if (topBottomRatio > 1.5) return false;
-
-	const leftRightRatio = Math.max(leftDist, rightDist) / Math.min(leftDist, rightDist);
-	if (leftRightRatio > 1.5) return false;
-
-	// All sides must have reasonable length
-	const minSideLength = Math.min(topDist, bottomDist, leftDist, rightDist);
-	if (minSideLength < 20) return false;
-
+	if (Math.max(topDist, bottomDist) / Math.min(topDist, bottomDist) > 1.5) return false;
+	if (Math.max(leftDist, rightDist) / Math.min(leftDist, rightDist) > 1.5) return false;
+	if (Math.min(topDist, bottomDist, leftDist, rightDist) < 20) return false;
 	return true;
 }
 
-/**
- * Checks that a meaningful fraction of the candidate quad's bounding box
- * overlaps the paper mask, to reject quads that mostly cover background.
- */
-function quadOverlapsPaper(
-	points: Point[],
-	paperMask: Uint8Array,
-	width: number,
-	height: number
-): boolean {
-	const xs = points.map((p) => p.x);
-	const ys = points.map((p) => p.y);
-	const x0 = Math.max(0, Math.min(...xs));
-	const y0 = Math.max(0, Math.min(...ys));
-	const x1 = Math.min(width - 1, Math.max(...xs));
-	const y1 = Math.min(height - 1, Math.max(...ys));
-
-	let paperPixels = 0;
-	let total = 0;
-	const step = 10;
-
-	for (let y = y0; y <= y1; y += step) {
-		for (let x = x0; x <= x1; x += step) {
+function quadOverlapsPaper(points: Point[], paperMask: Uint8Array, width: number, height: number): boolean {
+	const xs = points.map((p) => p.x), ys = points.map((p) => p.y);
+	const x0 = Math.max(0, Math.min(...xs)), y0 = Math.max(0, Math.min(...ys));
+	const x1 = Math.min(width - 1, Math.max(...xs)), y1 = Math.min(height - 1, Math.max(...ys));
+	let paperPixels = 0, total = 0;
+	for (let y = y0; y <= y1; y += 10)
+		for (let x = x0; x <= x1; x += 10) {
 			if (paperMask[Math.round(y) * width + Math.round(x)] > 0) paperPixels++;
 			total++;
 		}
-	}
-
 	return total > 0 && paperPixels / total > 0.15;
+}
+
+function cornersHaveEdgeSupport(ordered: Point[], edges: Uint8Array, width: number, height: number, radius = 6): boolean {
+	for (const p of ordered) {
+		const px = Math.round(p.x), py = Math.round(p.y);
+		let found = false;
+		for (let dy = -radius; dy <= radius && !found; dy++)
+			for (let dx = -radius; dx <= radius; dx++) {
+				const sx = clamp(px + dx, 0, width - 1), sy = clamp(py + dy, 0, height - 1);
+				if (edges[sy * width + sx] !== 0) { found = true; break; }
+			}
+		if (!found) return false;
+	}
+	return true;
 }
 
 // ---------- Utils ----------

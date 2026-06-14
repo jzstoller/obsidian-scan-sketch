@@ -63,6 +63,7 @@
 	<body>
 		<div class="container">
 			<h1>📄 Page Detection Test</h1>
+			<p style="font-size: 12px; color: #888; margin-bottom: 16px;">Built: Sunday June 14 2026, 10:36 AM ET | <span id="version">loading...</span></p>
 			<button onclick="document.getElementById('fileInput').click()">📁 Choose Image</button>
 			<input type="file" id="fileInput" accept="image/*" />
 			<div class="status" id="status">Pick an image of a document/page to test detection.</div>
@@ -84,7 +85,9 @@
 		</div>
 
 		<script type="module">
-			import { detectPageCornersDebug } from "./PageDetection.js";
+			import { detectPageCornersDebug, PAGE_DETECTION_VERSION } from "./PageDetection.js";
+
+			document.getElementById("version").textContent = "PageDetection.ts: " + PAGE_DETECTION_VERSION;
 
 			const fileInput = document.getElementById("fileInput");
 			const canvas = document.getElementById("canvas");

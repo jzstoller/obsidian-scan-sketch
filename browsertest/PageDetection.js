@@ -1,10 +1,7 @@
 // Services/PageDetection.ts
+var PAGE_DETECTION_VERSION = "2026-06-14T11:25 ET";
 var DETECTION_MAX_DIM = 800;
 function detectPageCorners(imageData) {
-  const result = detectPageCornersDebug(imageData);
-  return result.corners;
-}
-function detectPageCornersDebug(imageData) {
   const { data: scaled, scale, width, height } = downscale(imageData, DETECTION_MAX_DIM);
   const { saturation, value } = toHSVChannels(scaled, width, height);
   const satMask = thresholdBelow(saturation, width, height, 100);
@@ -15,36 +12,46 @@ function detectPageCornersDebug(imageData) {
   const blurred = gaussianBlur5x5(denoised, width, height);
   const { magnitude, direction } = sobel(blurred, width, height);
   const suppressed = nonMaxSuppression(magnitude, direction, width, height);
-  let edges = hysteresisThreshold(suppressed, width, height, 50, 100);
+  let edges = hysteresisThreshold(suppressed, width, height, 50, 150);
+  edges = dilate3x3(edges, width, height);
   edges = dilate3x3(edges, width, height);
   const contours = findContours(edges, width, height);
-  const debug = { paperMask, edges, combined: edges, width, height };
-  if (contours.length === 0)
-    return { corners: null, hull: null, debug };
+  const result = findBestQuad(contours, paperMask, edges, width, height, scale);
+  return result;
+}
+function findBestQuad(contours, paperMask, edges, width, height, scale) {
   const candidates = contours.map((c) => ({ contour: c, area: contourArea(c) })).sort((a, b) => b.area - a.area);
-  let firstHull = null;
   for (const { contour } of candidates) {
     if (contour.length < 4)
       continue;
     const hull = convexHull(contour);
     if (hull.length < 4)
       continue;
-    if (!firstHull)
-      firstHull = hull.map((p) => ({ x: p.x / scale, y: p.y / scale }));
     let quad = approxPolyDP(hull, 0.02 * perimeter(hull));
-    if (quad.length !== 4) {
+    if (quad.length !== 4)
       quad = boundingQuadFromHull(hull);
-    }
     if (quad.length !== 4)
       continue;
-    const ordered = orderCorners(quad);
-    if (!isValidQuad(ordered) || !quadOverlapsPaper(ordered, paperMask, width, height)) {
+    const ordered = orderCorners(quad, width, height);
+    if (!isValidQuad(ordered))
       continue;
-    }
-    const corners = ordered.map((p) => ({ x: p.x / scale, y: p.y / scale, isDragging: false }));
-    return { corners, hull: firstHull, debug };
+    const quadW = Math.max(
+      Math.hypot(ordered[1].x - ordered[0].x, ordered[1].y - ordered[0].y),
+      Math.hypot(ordered[2].x - ordered[3].x, ordered[2].y - ordered[3].y)
+    );
+    const quadH = Math.max(
+      Math.hypot(ordered[3].x - ordered[0].x, ordered[3].y - ordered[0].y),
+      Math.hypot(ordered[2].x - ordered[1].x, ordered[2].y - ordered[1].y)
+    );
+    if (quadW * quadH / (width * height) < 0.3)
+      continue;
+    if (!quadOverlapsPaper(ordered, paperMask, width, height))
+      continue;
+    if (!cornersHaveEdgeSupport(ordered, edges, width, height))
+      continue;
+    return ordered.map((p) => ({ x: p.x / scale, y: p.y / scale, isDragging: false }));
   }
-  return { corners: null, hull: firstHull, debug };
+  return null;
 }
 function downscale(imageData, maxDim) {
   const { width: w, height: h, data } = imageData;
@@ -71,10 +78,7 @@ function downscale(imageData, maxDim) {
 function toGrayscale(data, width, height) {
   const gray = new Float32Array(width * height);
   for (let i = 0; i < width * height; i++) {
-    const r = data[i * 4];
-    const g = data[i * 4 + 1];
-    const b = data[i * 4 + 2];
-    gray[i] = 0.299 * r + 0.587 * g + 0.114 * b;
+    gray[i] = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
   }
   return gray;
 }
@@ -87,71 +91,55 @@ function toHSVChannels(data, width, height) {
     const b = data[i * 4 + 2] / 255;
     const max = Math.max(r, g, b);
     const min = Math.min(r, g, b);
-    const v = max;
-    const s = max === 0 ? 0 : (max - min) / max;
-    saturation[i] = Math.round(s * 255);
-    value[i] = Math.round(v * 255);
+    saturation[i] = Math.round((max === 0 ? 0 : (max - min) / max) * 255);
+    value[i] = Math.round(max * 255);
   }
   return { saturation, value };
 }
 function medianFilter5x5(src, width, height) {
   const out = new Float32Array(width * height);
-  const window = new Float32Array(25);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      let n = 0;
-      for (let ky = -2; ky <= 2; ky++) {
-        for (let kx = -2; kx <= 2; kx++) {
-          const sx = clamp(x + kx, 0, width - 1);
-          const sy = clamp(y + ky, 0, height - 1);
-          window[n++] = src[sy * width + sx];
-        }
-      }
-      const sorted = Array.from(window).sort((a, b) => a - b);
-      out[y * width + x] = sorted[12];
+      const window = [];
+      for (let ky = -2; ky <= 2; ky++)
+        for (let kx = -2; kx <= 2; kx++)
+          window.push(src[clamp(y + ky, 0, height - 1) * width + clamp(x + kx, 0, width - 1)]);
+      window.sort((a, b) => a - b);
+      out[y * width + x] = window[12];
     }
   }
   return out;
 }
 function gaussianBlur5x5(src, width, height) {
   const kernel = [2, 4, 5, 4, 2, 4, 9, 12, 9, 4, 5, 12, 15, 12, 5, 4, 9, 12, 9, 4, 2, 4, 5, 4, 2];
-  const kernelSum = 159;
   const out = new Float32Array(width * height);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      let sum = 0;
-      let k = 0;
-      for (let ky = -2; ky <= 2; ky++) {
-        for (let kx = -2; kx <= 2; kx++) {
-          const sx = clamp(x + kx, 0, width - 1);
-          const sy = clamp(y + ky, 0, height - 1);
-          sum += src[sy * width + sx] * kernel[k++];
-        }
-      }
-      out[y * width + x] = sum / kernelSum;
+      let sum = 0, k = 0;
+      for (let ky = -2; ky <= 2; ky++)
+        for (let kx = -2; kx <= 2; kx++)
+          sum += src[clamp(y + ky, 0, height - 1) * width + clamp(x + kx, 0, width - 1)] * kernel[k++];
+      out[y * width + x] = sum / 159;
     }
   }
   return out;
 }
 function thresholdAbove(src, width, height, value) {
   const out = new Uint8Array(width * height);
-  for (let i = 0; i < src.length; i++) {
+  for (let i = 0; i < src.length; i++)
     out[i] = src[i] >= value ? 255 : 0;
-  }
   return out;
 }
 function thresholdBelow(src, width, height, value) {
   const out = new Uint8Array(width * height);
-  for (let i = 0; i < src.length; i++) {
+  for (let i = 0; i < src.length; i++)
     out[i] = src[i] < value ? 255 : 0;
-  }
   return out;
 }
 function bitwiseAnd(a, b, width, height) {
   const out = new Uint8Array(width * height);
-  for (let i = 0; i < out.length; i++) {
+  for (let i = 0; i < out.length; i++)
     out[i] = a[i] !== 0 && b[i] !== 0 ? 255 : 0;
-  }
   return out;
 }
 function dilate3x3(src, width, height) {
@@ -159,18 +147,14 @@ function dilate3x3(src, width, height) {
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       let any = false;
-      for (let ky = -1; ky <= 1 && !any; ky++) {
+      for (let ky = -1; ky <= 1 && !any; ky++)
         for (let kx = -1; kx <= 1; kx++) {
-          const sx = x + kx;
-          const sy = y + ky;
-          if (sx < 0 || sx >= width || sy < 0 || sy >= height)
-            continue;
-          if (src[sy * width + sx] !== 0) {
+          const sx = x + kx, sy = y + ky;
+          if (sx >= 0 && sx < width && sy >= 0 && sy < height && src[sy * width + sx] !== 0) {
             any = true;
             break;
           }
         }
-      }
       out[y * width + x] = any ? 255 : 0;
     }
   }
@@ -183,19 +167,14 @@ function sobel(src, width, height) {
   const gy = [-1, -2, -1, 0, 0, 0, 1, 2, 1];
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      let sx = 0;
-      let sy = 0;
-      let k = 0;
-      for (let ky = -1; ky <= 1; ky++) {
+      let sx = 0, sy = 0, k = 0;
+      for (let ky = -1; ky <= 1; ky++)
         for (let kx = -1; kx <= 1; kx++) {
-          const px = clamp(x + kx, 0, width - 1);
-          const py = clamp(y + ky, 0, height - 1);
-          const val = src[py * width + px];
-          sx += val * gx[k];
-          sy += val * gy[k];
+          const v = src[clamp(y + ky, 0, height - 1) * width + clamp(x + kx, 0, width - 1)];
+          sx += v * gx[k];
+          sy += v * gy[k];
           k++;
         }
-      }
       const idx = y * width + x;
       magnitude[idx] = Math.sqrt(sx * sx + sy * sy);
       direction[idx] = Math.atan2(sy, sx);
@@ -211,8 +190,7 @@ function nonMaxSuppression(magnitude, direction, width, height) {
       let angle = direction[idx] * (180 / Math.PI);
       if (angle < 0)
         angle += 180;
-      let n1;
-      let n2;
+      let n1, n2;
       if (angle >= 0 && angle < 22.5 || angle >= 157.5 && angle <= 180) {
         n1 = magnitude[idx - 1];
         n2 = magnitude[idx + 1];
@@ -233,16 +211,13 @@ function nonMaxSuppression(magnitude, direction, width, height) {
   return out;
 }
 function hysteresisThreshold(src, width, height, low, high) {
-  const strong = 255;
-  const weak = 75;
+  const strong = 255, weak = 75;
   const out = new Uint8Array(width * height);
   for (let i = 0; i < src.length; i++) {
     if (src[i] >= high)
       out[i] = strong;
     else if (src[i] >= low)
       out[i] = weak;
-    else
-      out[i] = 0;
   }
   let changed = true;
   while (changed) {
@@ -252,24 +227,18 @@ function hysteresisThreshold(src, width, height, low, high) {
         const idx = y * width + x;
         if (out[idx] !== weak)
           continue;
-        for (let ky = -1; ky <= 1; ky++) {
-          for (let kx = -1; kx <= 1; kx++) {
+        for (let ky = -1; ky <= 1; ky++)
+          for (let kx = -1; kx <= 1; kx++)
             if (out[(y + ky) * width + (x + kx)] === strong) {
               out[idx] = strong;
               changed = true;
-              break;
             }
-          }
-          if (out[idx] === strong)
-            break;
-        }
       }
     }
   }
-  for (let i = 0; i < out.length; i++) {
+  for (let i = 0; i < out.length; i++)
     if (out[i] === weak)
       out[i] = 0;
-  }
   return out;
 }
 function findContours(edges, width, height) {
@@ -285,15 +254,13 @@ function findContours(edges, width, height) {
       visited[idx] = 1;
       while (stack.length > 0) {
         const cur = stack.pop();
-        const cx = cur % width;
-        const cy = Math.floor(cur / width);
+        const cx = cur % width, cy = Math.floor(cur / width);
         component.push({ x: cx, y: cy });
-        for (let ny = -1; ny <= 1; ny++) {
+        for (let ny = -1; ny <= 1; ny++)
           for (let nx = -1; nx <= 1; nx++) {
             if (nx === 0 && ny === 0)
               continue;
-            const px = cx + nx;
-            const py = cy + ny;
+            const px = cx + nx, py = cy + ny;
             if (px < 0 || px >= width || py < 0 || py >= height)
               continue;
             const pidx = py * width + px;
@@ -302,7 +269,6 @@ function findContours(edges, width, height) {
               stack.push(pidx);
             }
           }
-        }
       }
       if (component.length > 60)
         contours.push(component);
@@ -316,8 +282,7 @@ function contourArea(points) {
     return 0;
   let area = 0;
   for (let i = 0; i < hull.length; i++) {
-    const a = hull[i];
-    const b = hull[(i + 1) % hull.length];
+    const a = hull[i], b = hull[(i + 1) % hull.length];
     area += a.x * b.y - b.x * a.y;
   }
   return Math.abs(area) / 2;
@@ -325,8 +290,7 @@ function contourArea(points) {
 function perimeter(points) {
   let total = 0;
   for (let i = 0; i < points.length; i++) {
-    const a = points[i];
-    const b = points[(i + 1) % points.length];
+    const a = points[i], b = points[(i + 1) % points.length];
     total += Math.hypot(b.x - a.x, b.y - a.y);
   }
   return total;
@@ -334,17 +298,16 @@ function perimeter(points) {
 function approxPolyDP(points, epsilon) {
   if (points.length < 3)
     return points;
-  const dmaxInfo = findFarthestPoint(points, points[0], points[points.length - 1]);
-  if (dmaxInfo.distance > epsilon) {
-    const left = approxPolyDP(points.slice(0, dmaxInfo.index + 1), epsilon);
-    const right = approxPolyDP(points.slice(dmaxInfo.index), epsilon);
+  const { index, distance } = findFarthestPoint(points, points[0], points[points.length - 1]);
+  if (distance > epsilon) {
+    const left = approxPolyDP(points.slice(0, index + 1), epsilon);
+    const right = approxPolyDP(points.slice(index), epsilon);
     return [...left.slice(0, -1), ...right];
   }
   return [points[0], points[points.length - 1]];
 }
 function findFarthestPoint(points, lineStart, lineEnd) {
-  let maxDist = 0;
-  let maxIdx = 0;
+  let maxDist = 0, maxIdx = 0;
   for (let i = 1; i < points.length - 1; i++) {
     const d = pointToLineDistance(points[i], lineStart, lineEnd);
     if (d > maxDist) {
@@ -355,8 +318,7 @@ function findFarthestPoint(points, lineStart, lineEnd) {
   return { index: maxIdx, distance: maxDist };
 }
 function pointToLineDistance(p, a, b) {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
+  const dx = b.x - a.x, dy = b.y - a.y;
   const len = Math.hypot(dx, dy);
   if (len === 0)
     return Math.hypot(p.x - a.x, p.y - a.y);
@@ -369,17 +331,15 @@ function convexHull(points) {
   const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
   const lower = [];
   for (const p of sorted) {
-    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0)
       lower.pop();
-    }
     lower.push(p);
   }
   const upper = [];
   for (let i = sorted.length - 1; i >= 0; i--) {
     const p = sorted[i];
-    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) {
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0)
       upper.pop();
-    }
     upper.push(p);
   }
   upper.pop();
@@ -389,10 +349,7 @@ function convexHull(points) {
 function boundingQuadFromHull(hull) {
   if (hull.length < 4)
     return [];
-  let tl = hull[0];
-  let br = hull[0];
-  let tr = hull[0];
-  let bl = hull[0];
+  let tl = hull[0], br = hull[0], tr = hull[0], bl = hull[0];
   for (const p of hull) {
     if (p.x + p.y < tl.x + tl.y)
       tl = p;
@@ -405,11 +362,36 @@ function boundingQuadFromHull(hull) {
   }
   return [tl, tr, br, bl];
 }
-function orderCorners(points) {
-  let tl = points[0];
-  let br = points[0];
-  let tr = points[0];
-  let bl = points[0];
+function orderCorners(points, imgWidth = 0, imgHeight = 0) {
+  if (imgWidth > 0 && imgHeight > 0 && points.length >= 4) {
+    const imageCorners = [
+      { x: 0, y: 0 },
+      { x: imgWidth, y: 0 },
+      { x: imgWidth, y: imgHeight },
+      { x: 0, y: imgHeight }
+    ];
+    const result = [];
+    const used = /* @__PURE__ */ new Set();
+    for (const ic of imageCorners) {
+      let bestDist = Infinity, bestIdx = -1;
+      for (let i = 0; i < points.length; i++) {
+        if (used.has(i))
+          continue;
+        const d = Math.hypot(points[i].x - ic.x, points[i].y - ic.y);
+        if (d < bestDist) {
+          bestDist = d;
+          bestIdx = i;
+        }
+      }
+      if (bestIdx >= 0) {
+        result.push(points[bestIdx]);
+        used.add(bestIdx);
+      }
+    }
+    if (result.length === 4)
+      return result;
+  }
+  let tl = points[0], br = points[0], tr = points[0], bl = points[0];
   for (const p of points) {
     if (p.x + p.y < tl.x + tl.y)
       tl = p;
@@ -426,56 +408,58 @@ function dist(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 function isValidQuad(ordered) {
-  for (let i = 0; i < ordered.length; i++) {
-    for (let j = i + 1; j < ordered.length; j++) {
+  for (let i = 0; i < ordered.length; i++)
+    for (let j = i + 1; j < ordered.length; j++)
       if (dist(ordered[i], ordered[j]) < 10)
         return false;
-    }
-  }
   const [tl, tr, br, bl] = ordered;
-  const topDist = dist(tl, tr);
-  const bottomDist = dist(bl, br);
-  const leftDist = dist(tl, bl);
-  const rightDist = dist(tr, br);
-  const widthAvg = (topDist + bottomDist) / 2;
-  const heightAvg = (leftDist + rightDist) / 2;
-  const aspectRatio = widthAvg / heightAvg;
+  const topDist = dist(tl, tr), bottomDist = dist(bl, br);
+  const leftDist = dist(tl, bl), rightDist = dist(tr, br);
+  const aspectRatio = (topDist + bottomDist) / (leftDist + rightDist);
   if (aspectRatio < 0.3 || aspectRatio > 3)
     return false;
-  const topBottomRatio = Math.max(topDist, bottomDist) / Math.min(topDist, bottomDist);
-  if (topBottomRatio > 1.5)
+  if (Math.max(topDist, bottomDist) / Math.min(topDist, bottomDist) > 1.5)
     return false;
-  const leftRightRatio = Math.max(leftDist, rightDist) / Math.min(leftDist, rightDist);
-  if (leftRightRatio > 1.5)
+  if (Math.max(leftDist, rightDist) / Math.min(leftDist, rightDist) > 1.5)
     return false;
-  const minSideLength = Math.min(topDist, bottomDist, leftDist, rightDist);
-  if (minSideLength < 20)
+  if (Math.min(topDist, bottomDist, leftDist, rightDist) < 20)
     return false;
   return true;
 }
 function quadOverlapsPaper(points, paperMask, width, height) {
-  const xs = points.map((p) => p.x);
-  const ys = points.map((p) => p.y);
-  const x0 = Math.max(0, Math.min(...xs));
-  const y0 = Math.max(0, Math.min(...ys));
-  const x1 = Math.min(width - 1, Math.max(...xs));
-  const y1 = Math.min(height - 1, Math.max(...ys));
-  let paperPixels = 0;
-  let total = 0;
-  const step = 10;
-  for (let y = y0; y <= y1; y += step) {
-    for (let x = x0; x <= x1; x += step) {
+  const xs = points.map((p) => p.x), ys = points.map((p) => p.y);
+  const x0 = Math.max(0, Math.min(...xs)), y0 = Math.max(0, Math.min(...ys));
+  const x1 = Math.min(width - 1, Math.max(...xs)), y1 = Math.min(height - 1, Math.max(...ys));
+  let paperPixels = 0, total = 0;
+  for (let y = y0; y <= y1; y += 10)
+    for (let x = x0; x <= x1; x += 10) {
       if (paperMask[Math.round(y) * width + Math.round(x)] > 0)
         paperPixels++;
       total++;
     }
-  }
   return total > 0 && paperPixels / total > 0.15;
+}
+function cornersHaveEdgeSupport(ordered, edges, width, height, radius = 6) {
+  for (const p of ordered) {
+    const px = Math.round(p.x), py = Math.round(p.y);
+    let found = false;
+    for (let dy = -radius; dy <= radius && !found; dy++)
+      for (let dx = -radius; dx <= radius; dx++) {
+        const sx = clamp(px + dx, 0, width - 1), sy = clamp(py + dy, 0, height - 1);
+        if (edges[sy * width + sx] !== 0) {
+          found = true;
+          break;
+        }
+      }
+    if (!found)
+      return false;
+  }
+  return true;
 }
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 export {
-  detectPageCorners,
-  detectPageCornersDebug
+  PAGE_DETECTION_VERSION,
+  detectPageCorners
 };
