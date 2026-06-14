@@ -6,7 +6,7 @@ const DETECTION_MAX_DIM = 800;
 
 /**
  * Attempts to detect the four corners of a page/document within the image.
- * Returns points in TL, TR, BR, BL order in full-resolution coordinates,
+ * Returns points in TL, TR, BL, BR order in full-resolution coordinates,
  * or null if no confident quad was found.
  *
  * Pipeline:
@@ -78,7 +78,14 @@ function findBestQuad(
 		if (!quadOverlapsPaper(ordered, paperMask, width, height)) continue;
 		if (!cornersHaveEdgeSupport(ordered, edges, width, height)) continue;
 
-		return ordered.map((p) => ({ x: p.x / scale, y: p.y / scale, isDragging: false }));
+		// orderCorners returns [TL, TR, BR, BL] but we need [TL, TR, BL, BR]
+		// Swap the bottom two corners to match expected format
+		return [
+			{ x: ordered[0].x / scale, y: ordered[0].y / scale, isDragging: false }, // TL
+			{ x: ordered[1].x / scale, y: ordered[1].y / scale, isDragging: false }, // TR
+			{ x: ordered[3].x / scale, y: ordered[3].y / scale, isDragging: false }, // BL
+			{ x: ordered[2].x / scale, y: ordered[2].y / scale, isDragging: false }, // BR
+		];
 	}
 	return null;
 }

@@ -464,14 +464,18 @@ export class ImagePreview {
 		};
 	}
 
-	private drawCroppingPoints() {
-		// Initialize crop points at four corners of the image
-		this.cropPoints = initializeCropPoints({
-			x: this.imgX,
-			y: this.imgY,
-			width: this.imgWidth,
-			height: this.imgHeight,
-		});
+	private drawCroppingPoints(detectedPoints?: CropPoint[]) {
+		// Use detected points if provided, otherwise initialize at corners
+		if (detectedPoints && detectedPoints.length === 4) {
+			this.cropPoints = detectedPoints;
+		} else {
+			this.cropPoints = initializeCropPoints({
+				x: this.imgX,
+				y: this.imgY,
+				width: this.imgWidth,
+				height: this.imgHeight,
+			});
+		}
 
 		this.renderCroppingPointsOnCanvas();
 		this.croppingPointsVisible = true;
@@ -513,7 +517,7 @@ export class ImagePreview {
 		this.croppingPointsVisible = false;
 	}
 
-	public toggleCroppingPoints(show: boolean): OperationResult {
+	public toggleCroppingPoints(show: boolean, detectedPoints?: CropPoint[]): OperationResult {
 		let state = false;
 		let message = "";
 		if (this.img == null) {
@@ -521,9 +525,9 @@ export class ImagePreview {
 			message = "Please upload photo first!";
 		} else {
 			if (show) {
-				this.drawCroppingPoints();
+				this.drawCroppingPoints(detectedPoints);
 				state = true;
-				message = "Cropping points displayed";
+				message = detectedPoints ? "Auto-detected corners displayed" : "Cropping points displayed";
 			} else {
 				this.removeCroppingPoints();
 				state = true;
