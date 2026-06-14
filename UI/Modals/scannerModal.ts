@@ -194,7 +194,11 @@ export class ScannerModal extends Modal {
 			
 			// Show the detected corners on the canvas
 			const { success } = this.canvas.toggleCroppingPoints(true, scaledCorners);
-			if (!success) {
+			if (success) {
+				// Hide main buttons and show confirm/cancel buttons
+				this.buttonWrapper.hide();
+				this.confirmButtonWrapper.show();
+			} else {
 				new Notice("Failed to display detected corners");
 			}
 		} else {
@@ -209,6 +213,7 @@ export class ScannerModal extends Modal {
 		if (!success) {
 			return;
 		}
+		// Hide main buttons and show confirm/cancel buttons
 		this.buttonWrapper.hide();
 		this.confirmButtonWrapper.show();
 	}
