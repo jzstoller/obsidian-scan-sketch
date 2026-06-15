@@ -1,12 +1,10 @@
 {
-	"id": "scan-sketch",
-	"name": "Scan Sketch",
+	"id": "jzs-scan-sketch",
+	"name": "Scan Sketch Modif",
 	"version": "1.2.3",
 	"minAppVersion": "0.15.0",
 	"description": "Scan, process, and enhance handwritten notes with perspective correction, background removal, and advanced filtering.",
-	"author": "Show Wai Yan",
-	"authorUrl": "https://github.com/Showwaiyan",
-	"fundingUrl": "https://buymeacoffee.com/showwaiyan",
+	"author": "Show Wai Yan - Extski",
 	"isDesktopOnly": false,
 	"icon": "scan"
 }
