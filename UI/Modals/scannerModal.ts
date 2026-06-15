@@ -164,32 +164,18 @@ export class ScannerModal extends Modal {
 		const imageData = ctx.getImageData(0, 0, exportCanvas.width, exportCanvas.height);
 		const dpr = window.devicePixelRatio || 1;
 		
-		// Debug: Log image data dimensions
-		console.log("Detection input:", {
-			canvasWidth: exportCanvas.width,
-			canvasHeight: exportCanvas.height,
-			imageDataWidth: imageData.width,
-			imageDataHeight: imageData.height,
-			dpr: dpr
-		});
-		
 		new Notice("Detecting page corners...", 2000);
 		
 		// Attempt auto-detection
 		const detectedCorners = detectPageCorners(imageData);
 		
 		if (detectedCorners) {
-			// Debug: Log detected corners before scaling
-			console.log("Raw detected corners (device pixels):", detectedCorners);
-			
 			// Scale corners from device pixels to CSS pixels
 			const scaledCorners = detectedCorners.map(corner => ({
 				x: corner.x / dpr,
 				y: corner.y / dpr,
 				isDragging: false
 			}));
-			
-			console.log("Scaled corners (CSS pixels):", scaledCorners);
 			
 			new Notice(`✓ Detected corners at: TL(${Math.round(scaledCorners[0].x)},${Math.round(scaledCorners[0].y)}) TR(${Math.round(scaledCorners[1].x)},${Math.round(scaledCorners[1].y)}) BL(${Math.round(scaledCorners[2].x)},${Math.round(scaledCorners[2].y)}) BR(${Math.round(scaledCorners[3].x)},${Math.round(scaledCorners[3].y)})`, 8000);
 			
@@ -204,7 +190,6 @@ export class ScannerModal extends Modal {
 			}
 		} else {
 			new Notice("✗ No page corners detected. Try adjusting the image or use manual crop.", 5000);
-			console.log("Page detection returned null");
 		}
 	}
 

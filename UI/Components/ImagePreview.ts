@@ -197,7 +197,6 @@ export class ImagePreview {
 		if (clickedIndex !== -1) {
 		this.draggedPointIndex = clickedIndex;
 		this.cropPoints = setCropPointDragging(this.cropPoints, clickedIndex, true);
-		console.debug(`Crop point ${clickedIndex} clicked at (${pos.x}, ${pos.y})`);
 		} else {
 			this.draggedPointIndex = -1;
 		}
@@ -253,7 +252,6 @@ export class ImagePreview {
 		if (clickedIndex !== -1) {
 		this.draggedPointIndex = clickedIndex;
 		this.cropPoints = setCropPointDragging(this.cropPoints, clickedIndex, true);
-		console.debug(`Crop point ${clickedIndex} touched at (${pos.x}, ${pos.y})`);
 		} else {
 			this.draggedPointIndex = -1;
 		}
@@ -360,11 +358,9 @@ export class ImagePreview {
 	private initializePlaceholder() {
 		const cssWidth = parseInt(this.canvas.style.width);
 		const cssHeight = parseInt(this.canvas.style.height);
-	const dpr = window.devicePixelRatio || 1;
+		const dpr = window.devicePixelRatio || 1;
 
-	console.debug("Canvas dimensions:", cssWidth, cssHeight, "DPR:", dpr);
-
-	renderPlaceholder(this.ctx, cssWidth, cssHeight, this.placeholderConfig);
+		renderPlaceholder(this.ctx, cssWidth, cssHeight, this.placeholderConfig);
 	}
 
 	public darawImage(file: File) {
@@ -442,8 +438,6 @@ export class ImagePreview {
 				message: "Please upload photo first!",
 			};
 	}
-	
-	console.debug("Rotation count:", this.toRotateDegree);
 	
 	// Clear crop points for safety (positions become invalid after rotation)
 		this.removeCroppingPoints();
@@ -587,11 +581,6 @@ export class ImagePreview {
 		
 	const sourceImageData = this.ctx.getImageData(0, 0, actualWidth, actualHeight);
 
-	console.debug("Performing perspective crop:", {
-		points: this.cropPoints,
-		canvasDimensions: { cssWidth, cssHeight, actualWidth, actualHeight, dpr },
-	});
-
 	// Perform the transformation
 		const result = performPerspectiveCrop(
 			sourceImageData,
@@ -637,8 +626,6 @@ export class ImagePreview {
 			// Hide crop points
 			this.cropPoints = [];
 		this.croppingPointsVisible = false;
-
-		console.debug("Perspective crop completed successfully");
 		}).catch((error) => {
 			console.error("Error creating image from crop:", error);
 		});
