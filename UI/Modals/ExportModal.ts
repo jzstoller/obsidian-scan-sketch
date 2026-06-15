@@ -25,6 +25,8 @@ export class ExportModal extends Modal {
 	private svgColorSection: HTMLElement;
 	private svgColorInput: HTMLInputElement;
 	private svgTintColor: string = "";
+	private insertLinkCheckbox: HTMLInputElement;
+	private shouldInsertLink: boolean = true;
 
 	constructor(app: App, canvas: HTMLCanvasElement, defaultFolder: string) {
 		super(app);
@@ -45,6 +47,9 @@ export class ExportModal extends Modal {
 
 		// Filename input
 		this.buildFilenameInput(contentEl);
+
+		// Insert link checkbox
+		this.buildInsertLinkCheckbox(contentEl);
 
 		// Folder display
 		this.buildFolderDisplay(contentEl);
@@ -142,6 +147,26 @@ export class ExportModal extends Modal {
 		this.updateExtensionDisplay();
 	}
 
+	private buildInsertLinkCheckbox(container: HTMLElement): void {
+		const section = container.createDiv("export-insert-link-section");
+
+		const wrapper = section.createDiv("export-insert-link-wrapper");
+		
+		this.insertLinkCheckbox = wrapper.createEl("input", {
+			type: "checkbox",
+			attr: { id: "insert-link-checkbox" },
+		}) as HTMLInputElement;
+		this.insertLinkCheckbox.checked = true;
+		this.insertLinkCheckbox.addEventListener("change", () => {
+			this.shouldInsertLink = this.insertLinkCheckbox.checked;
+		});
+
+		const label = wrapper.createEl("label", {
+			attr: { for: "insert-link-checkbox" },
+		});
+		label.textContent = "Insert markdown link into current note";
+	}
+
 	private buildFolderDisplay(container: HTMLElement): void {
 		const section = container.createDiv("export-folder-section");
 
@@ -220,6 +245,21 @@ export class ExportModal extends Modal {
 					filenameWithExtension,
 					blob,
 				);
+
+				// Insert markdown link if checkbox is checked
+				if (this.shouldInsertLink) {
+					const activeFile = this.app.workspace.getActiveFile();
+					if (activeFile) {
+						const editor = this.app.workspace.activeEditor?.editor;
+						if (editor) {
+							// Create markdown link to the image
+							const markdownLink = `![[${file.path}]]`;
+							// Insert at cursor position
+							const cursor = editor.getCursor();
+							editor.replaceRange(markdownLink + "\n", cursor);
+						}
+					}
+				}
 
 				// Hide processing notice
 				processingNotice.hide();
