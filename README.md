@@ -1,4 +1,4 @@
-# Obsidian Handwritten Scanner
+# JZS Handwritten Scanner
 
 A powerful Obsidian plugin for scanning, processing, and enhancing handwritten notes and documents. Transform photos of your handwritten notes into clean, processed images with automatic perspective correction, background removal, and advanced filtering.
 
@@ -16,12 +16,12 @@ A powerful Obsidian plugin for scanning, processing, and enhancing handwritten n
 - **HiDPI Support**: Full support for high-resolution displays (Retina, 4K, etc.)
 
 ### 🎨 Advanced Image Enhancement
-- **Background Removal**: 
+- **Background Removal**:
   - Click-to-sample background color detection
   - Adjustable tolerance slider (0-50)
   - Real-time preview with checkerboard pattern for transparency
   - Export with true transparent background (PNG)
-  
+
 - **Image Filters**:
   - Brightness adjustment (-100 to +100)
   - Contrast enhancement (-100 to +100)
@@ -45,7 +45,7 @@ A powerful Obsidian plugin for scanning, processing, and enhancing handwritten n
   - Magnifying loupe when dragging crop points
   - Real-time filter preview
   - Clear status notifications
-  
+
 - **Touch & Mouse Support**:
   - Responsive controls for both desktop and mobile
   - Larger touch targets (30px) for mobile devices
@@ -72,12 +72,12 @@ A powerful Obsidian plugin for scanning, processing, and enhancing handwritten n
 2. Add this plugin via BRAT:
    - Open BRAT settings (Settings → BRAT)
    - Click "Add Beta plugin"
-   - Enter: `showwaiyan/obsidian-scan-sketch`
+   - Enter: `jzstoller/obsidian-scan-sketch`
    - Click "Add Plugin"
 
 3. Enable the plugin:
    - Go to Settings → Community Plugins
-   - Find "Sketch Scanner" and enable it
+   - Find "JZS Handwritten Scanner" and enable it
 
 BRAT will automatically keep the plugin updated with the latest releases.
 
@@ -86,7 +86,7 @@ BRAT will automatically keep the plugin updated with the latest releases.
 **⚠️ Warning:** Manual installation can cause crashes on mobile devices. Use BRAT instead if you use Obsidian on mobile.
 
 1. Download the latest release from GitHub
-2. Extract files to `VaultFolder/.obsidian/plugins/obsidian-scan-sketch/`
+2. Extract files to `VaultFolder/.obsidian/plugins/jzs-handwritten-scanner/`
 3. Reload Obsidian
 4. Enable plugin in Settings → Community Plugins
 
@@ -132,7 +132,7 @@ BRAT will automatically keep the plugin updated with the latest releases.
 
 ## Settings
 
-Access plugin settings via Settings → Obsidian Handwritten Scanner:
+Access plugin settings via Settings → JZS Handwritten Scanner:
 
 - **Export Default Folder**: Set the default folder for saving scanned images (default: root)
 

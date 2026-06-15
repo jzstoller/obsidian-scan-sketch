@@ -20,7 +20,7 @@ export default class HandWrittenPlugin extends Plugin {
 		await this.loadSettings();
 
 		// This creates an icon in the left ribbon.
-		this.addRibbonIcon("scan", "Scanner", async (_evt: MouseEvent) => {
+		this.addRibbonIcon("scan", "JZS Handwritten Scanner", async (_evt: MouseEvent) => {
 			// Called when the user clicks the icon.
 			// Lazy load ScannerModal only when needed
 			const { ScannerModal } = await import("./UI/Modals/scannerModal");
@@ -29,8 +29,8 @@ export default class HandWrittenPlugin extends Plugin {
 
 		// This adds a simple command that can be triggered anywhere
 		this.addCommand({
-			id: "open-sketch-scanner",
-			name: "Open sketch scanner",
+			id: "open-handwritten-scanner",
+			name: "Open handwritten scanner",
 			icon: "scan",
 			callback: async () => {
 				// Lazy load ScannerModal only when needed

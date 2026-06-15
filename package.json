@@ -1,5 +1,5 @@
 {
-	"name": "obsidian-scan-sketch",
+	"name": "jzs-handwritten-scanner",
 	"version": "1.2.3",
 	"description": "Scan, process, and enhance handwritten notes with perspective correction, background removal, and advanced filtering for Obsidian.",
 	"main": "main.js",

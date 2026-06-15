@@ -12,8 +12,8 @@ fi
 
 # Define the vault plugin directory
 # Update this path to your actual Obsidian vault location
-#VAULT_PLUGIN_DIR="$HOME/Documents/Plugin Dev Vault/.obsidian/plugins/scan-sketch"
-VAULT_PLUGIN_DIR="$HOME/Documents/Obsidian/Plugin Dev Vault/.obsidian/plugins/scan-sketch"
+#VAULT_PLUGIN_DIR="$HOME/Documents/Plugin Dev Vault/.obsidian/plugins/jzs-handwritten-scanner"
+VAULT_PLUGIN_DIR="$HOME/Documents/Obsidian/Plugin Dev Vault/.obsidian/plugins/jzs-handwritten-scanner"
 
 # Create the plugin directory if it doesn't exist
 mkdir -p "$VAULT_PLUGIN_DIR"
