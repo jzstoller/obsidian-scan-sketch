@@ -1,11 +1,16 @@
 import { App, Plugin, PluginSettingTab, Setting } from "obsidian";
+import type { ExportFormat } from "./Services/ImageExport";
 
 interface HandwrittenScannerSettings {
 	exportDefaultFolder: string;
+	exportDefaultFormat: ExportFormat;
+	closeAfterExport: boolean;
 }
 
 const DEFAULT_SETTINGS: HandwrittenScannerSettings = {
 	exportDefaultFolder: "Scanned",
+	exportDefaultFormat: "png",
+	closeAfterExport: true,
 };
 
 export default class HandWrittenPlugin extends Plugin {
@@ -75,6 +80,33 @@ class HandwrittenScannerSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.exportDefaultFolder)
 					.onChange(async (value) => {
 						this.plugin.settings.exportDefaultFolder = value || "Scanned";
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName("Default export format")
+			.setDesc("Default file format for exporting scanned images")
+			.addDropdown((dropdown) =>
+				dropdown
+					.addOption("png", "PNG")
+					.addOption("jpg", "JPG")
+					.addOption("svg", "SVG")
+					.setValue(this.plugin.settings.exportDefaultFormat)
+					.onChange(async (value: ExportFormat) => {
+						this.plugin.settings.exportDefaultFormat = value;
+						await this.plugin.saveSettings();
+					}),
+			);
+
+		new Setting(containerEl)
+			.setName("Close scanner after export")
+			.setDesc("Automatically close the scanner window after successfully exporting an image")
+			.addToggle((toggle) =>
+				toggle
+					.setValue(this.plugin.settings.closeAfterExport)
+					.onChange(async (value) => {
+						this.plugin.settings.closeAfterExport = value;
 						await this.plugin.saveSettings();
 					}),
 			);

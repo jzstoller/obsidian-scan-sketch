@@ -5,23 +5,27 @@
 
 import { App, ButtonComponent, Notice } from "obsidian";
 import { ExportModal } from "UI/Modals/ExportModal";
+import type HandWrittenPlugin from "../../main";
 
 export class ExportControls {
 	private app: App;
 	private getCanvas: () => HTMLCanvasElement;
-	private defaultFolder: string;
+	private plugin: HandWrittenPlugin;
 	private isImageLoaded: () => boolean;
+	private onExportComplete?: () => void;
 
 	constructor(
 		app: App,
 		getCanvas: () => HTMLCanvasElement,
-		defaultFolder: string,
+		plugin: HandWrittenPlugin,
 		isImageLoaded: () => boolean,
+		onExportComplete?: () => void,
 	) {
 		this.app = app;
 		this.getCanvas = getCanvas;
-		this.defaultFolder = defaultFolder;
+		this.plugin = plugin;
 		this.isImageLoaded = isImageLoaded;
+		this.onExportComplete = onExportComplete;
 	}
 
 	/**
@@ -44,6 +48,6 @@ export class ExportControls {
 		}
 
 		// Open export modal
-		new ExportModal(this.app, this.getCanvas(), this.defaultFolder).open();
+		new ExportModal(this.app, this.getCanvas(), this.plugin, this.onExportComplete).open();
 	}
 }

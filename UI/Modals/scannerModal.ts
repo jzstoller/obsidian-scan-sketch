@@ -128,8 +128,9 @@ export class ScannerModal extends Modal {
 		this.exportControls = new ExportControls(
 			this.app,
 			() => this.canvas.getExportCanvas(),
-			this.plugin.settings.exportDefaultFolder,
+			this.plugin,
 			() => this.canvas.isImageLoaded(),
+			() => this.close(), // Close scanner modal after export
 		);
 		this.btnExport = this.exportControls.createExportButton(this.buttonWrapper);
 
@@ -392,6 +393,11 @@ export class ScannerModal extends Modal {
 		// Clean up background removal controls
 		if (this.bgRemovalControls) {
 			this.bgRemovalControls.destroy();
+		}
+		
+		// Clean up export controls
+		if (this.exportControls) {
+			// No destroy method needed, just null it
 		}
 	}
 }

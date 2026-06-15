@@ -4,10 +4,12 @@
  */
 
 import { App, Modal, Notice, ButtonComponent, TextComponent } from "obsidian";
+import type HandWrittenPlugin from "../../main";
 import {
 	generateDefaultFilename,
 	validateFilename,
 	exportCanvasToPNG,
+	exportCanvasToJPG,
 	exportCanvasToSVG,
 	getFileExtension,
 	type ExportFormat,
@@ -16,22 +18,26 @@ import { saveToVault } from "../../Services/VaultExport";
 
 export class ExportModal extends Modal {
 	private canvas: HTMLCanvasElement;
-	private defaultFolder: string;
-	private selectedFormat: ExportFormat = "png";
+	private plugin: HandWrittenPlugin;
+	private selectedFormat: ExportFormat;
 	private filenameInput: TextComponent;
 	private extensionDisplay: HTMLElement;
 	private pngRadio: HTMLInputElement;
+	private jpgRadio: HTMLInputElement;
 	private svgRadio: HTMLInputElement;
 	private svgColorSection: HTMLElement;
 	private svgColorInput: HTMLInputElement;
 	private svgTintColor: string = "";
 	private insertLinkCheckbox: HTMLInputElement;
 	private shouldInsertLink: boolean = true;
+	private onExportComplete?: () => void;
 
-	constructor(app: App, canvas: HTMLCanvasElement, defaultFolder: string) {
+	constructor(app: App, canvas: HTMLCanvasElement, plugin: HandWrittenPlugin, onExportComplete?: () => void) {
 		super(app);
 		this.canvas = canvas;
-		this.defaultFolder = defaultFolder;
+		this.plugin = plugin;
+		this.selectedFormat = plugin.settings.exportDefaultFormat;
+		this.onExportComplete = onExportComplete;
 	}
 
 	onOpen() {
@@ -97,11 +103,12 @@ export class ExportModal extends Modal {
 			type: "radio",
 			attr: { name: "export-format", id: "format-png" },
 		});
-		this.pngRadio.checked = true;
+		this.pngRadio.checked = this.selectedFormat === "png";
 		this.pngRadio.addEventListener("change", () => {
 			this.selectedFormat = "png";
 			this.svgColorSection.style.display = "none";
 			this.updateExtensionDisplay();
+			this.saveFormatPreference();
 		});
 
 		const pngLabel = pngOption.createEl("label", {
@@ -109,16 +116,37 @@ export class ExportModal extends Modal {
 		});
 		pngLabel.textContent = "PNG";
 
+		// JPG radio option
+		const jpgOption = optionsWrapper.createDiv("export-format-option");
+		this.jpgRadio = jpgOption.createEl("input", {
+			type: "radio",
+			attr: { name: "export-format", id: "format-jpg" },
+		});
+		this.jpgRadio.checked = this.selectedFormat === "jpg";
+		this.jpgRadio.addEventListener("change", () => {
+			this.selectedFormat = "jpg";
+			this.svgColorSection.style.display = "none";
+			this.updateExtensionDisplay();
+			this.saveFormatPreference();
+		});
+
+		const jpgLabel = jpgOption.createEl("label", {
+			attr: { for: "format-jpg" },
+		});
+		jpgLabel.textContent = "JPG";
+
 		// SVG radio option
 		const svgOption = optionsWrapper.createDiv("export-format-option");
 		this.svgRadio = svgOption.createEl("input", {
 			type: "radio",
 			attr: { name: "export-format", id: "format-svg" },
 		});
+		this.svgRadio.checked = this.selectedFormat === "svg";
 		this.svgRadio.addEventListener("change", () => {
 			this.selectedFormat = "svg";
 			this.svgColorSection.style.display = "";
 			this.updateExtensionDisplay();
+			this.saveFormatPreference();
 		});
 
 		const svgLabel = svgOption.createEl("label", {
@@ -174,7 +202,7 @@ export class ExportModal extends Modal {
 		heading.textContent = "Save to:";
 
 		const folderPath = section.createDiv("export-folder-path");
-		folderPath.textContent = this.defaultFolder || "Root folder";
+		folderPath.textContent = this.plugin.settings.exportDefaultFolder || "Root folder";
 
 		const note = section.createDiv("export-folder-note");
 		note.textContent = "(change default folder in plugin settings)";
@@ -194,6 +222,11 @@ export class ExportModal extends Modal {
 		new ButtonComponent(buttonWrapper)
 			.setButtonText("Cancel")
 			.onClick(() => this.close());
+	}
+
+	private saveFormatPreference(): void {
+		this.plugin.settings.exportDefaultFormat = this.selectedFormat;
+		this.plugin.saveSettings();
 	}
 
 	private updateExtensionDisplay(): void {
@@ -231,6 +264,8 @@ export class ExportModal extends Modal {
 			let blob: Blob;
 			if (this.selectedFormat === "png") {
 				blob = await exportCanvasToPNG(this.canvas);
+			} else if (this.selectedFormat === "jpg") {
+				blob = await exportCanvasToJPG(this.canvas);
 			} else {
 				blob = exportCanvasToSVG(
 					this.canvas,
@@ -241,7 +276,7 @@ export class ExportModal extends Modal {
 				// Save to vault
 				const file = await saveToVault(
 					this.app.vault,
-					this.defaultFolder,
+					this.plugin.settings.exportDefaultFolder,
 					filenameWithExtension,
 					blob,
 				);
@@ -269,6 +304,11 @@ export class ExportModal extends Modal {
 
 				// Close modal
 				this.close();
+				
+				// Call the completion callback to close scanner modal if enabled
+				if (this.plugin.settings.closeAfterExport && this.onExportComplete) {
+					this.onExportComplete();
+				}
 			} catch (error) {
 				// Hide processing notice
 				processingNotice.hide();
